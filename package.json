@@ -1,0 +1,13 @@
+{
+  "name": "cotizador-lasny",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cotizador móvil de LAS NY CONSTRUCCION COMPANY con historial compartido",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
