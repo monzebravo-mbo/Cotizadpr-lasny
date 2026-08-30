@@ -11,27 +11,72 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const DATA_FILE = path.join(__dirname, 'data', 'cotizaciones.json');
 
-// ---- Autenticación básica opcional ----
-// Si defines APP_USER y APP_PASS (como variables de entorno o en un archivo .env
-// cargado antes de arrancar), el sitio pide usuario/contraseña antes de dejar entrar.
-// Si no las defines, el sitio queda abierto a quien tenga la URL.
+// ---- Autenticación con pantalla de login propia ----
+// Si defines APP_USER y APP_PASS (como variables de entorno, o en ecosystem.config.js),
+// el sitio pide usuario/contraseña con la pantalla de public/login.html antes de dejar
+// entrar. Si no las defines, el sitio queda abierto a quien tenga la URL.
 const APP_USER = process.env.APP_USER;
 const APP_PASS = process.env.APP_PASS;
+const COOKIE_NAME = 'lasny_session';
+const SESION_MS = 30 * 24 * 60 * 60 * 1000; // 30 días
 
-if (APP_USER && APP_PASS) {
-  app.use((req, res, next) => {
-    const header = req.headers.authorization || '';
-    const [tipo, credenciales] = header.split(' ');
-    if (tipo === 'Basic' && credenciales) {
-      const [user, pass] = Buffer.from(credenciales, 'base64').toString().split(':');
-      if (user === APP_USER && pass === APP_PASS) return next();
-    }
-    res.set('WWW-Authenticate', 'Basic realm="Cotizador LAS NY"');
-    res.status(401).send('Acceso restringido.');
-  });
+// Sesiones activas en memoria: token -> fecha de expiración.
+// Suficiente para un solo proceso pm2 con un par de usuarios.
+const sesiones = new Map();
+
+function leerCookies(req) {
+  const header = req.headers.cookie || '';
+  return Object.fromEntries(
+    header.split(';').map(p => p.trim()).filter(Boolean).map(p => {
+      const i = p.indexOf('=');
+      return [decodeURIComponent(p.slice(0, i)), decodeURIComponent(p.slice(i + 1))];
+    })
+  );
+}
+
+function sesionValida(token) {
+  if (!token || !sesiones.has(token)) return false;
+  const expira = sesiones.get(token);
+  if (Date.now() > expira) { sesiones.delete(token); return false; }
+  return true;
 }
 
 app.use(express.json());
+
+if (APP_USER && APP_PASS) {
+  app.post('/api/login', (req, res) => {
+    const { usuario, contrasena } = req.body || {};
+    if (usuario === APP_USER && contrasena === APP_PASS) {
+      const token = crypto.randomBytes(32).toString('hex');
+      sesiones.set(token, Date.now() + SESION_MS);
+      res.setHeader('Set-Cookie',
+        `${COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(SESION_MS / 1000)}`);
+      return res.json({ ok: true });
+    }
+    return res.status(401).json({ ok: false, error: 'Usuario o contraseña incorrectos.' });
+  });
+
+  app.post('/api/logout', (req, res) => {
+    const { [COOKIE_NAME]: token } = leerCookies(req);
+    if (token) sesiones.delete(token);
+    res.setHeader('Set-Cookie', `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
+    res.json({ ok: true });
+  });
+
+  app.use((req, res, next) => {
+    if (req.path === '/login.html' || req.path === '/api/login') return next();
+
+    const { [COOKIE_NAME]: token } = leerCookies(req);
+    if (sesionValida(token)) return next();
+
+    if (req.path.startsWith('/api/')) {
+      return res.status(401).json({ error: 'No autorizado' });
+    }
+    const redirect = encodeURIComponent(req.originalUrl || '/');
+    return res.redirect(`/login.html?redirect=${redirect}`);
+  });
+}
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ---- Utilidades de almacenamiento ----
